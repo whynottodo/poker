@@ -928,12 +928,31 @@ function showGame() {
 
 function startNextHand() {
     if (gameOver) return;
+
+    // 检查是否有人输光
+    let busted = false;
     for (let i = 0; i < table.numSeats; i++) {
         if (table.players[i].occupied && table.players[i].stack <= 0) {
-            gameOver = true; break;
+            busted = true; break;
         }
     }
-    if (gameOver) { render(); updateControls(); return; }
+    // 检查是否只剩一个还有筹码的玩家
+    let aliveCount = 0;
+    for (let i = 0; i < table.numSeats; i++) {
+        if (table.players[i].occupied && table.players[i].stack > 0) aliveCount++;
+    }
+    if (aliveCount < 2) busted = true;
+
+    if (busted) {
+        gameOver = true;
+        waitingNextHand = false;
+        if (isHost && conns.length > 0) {
+            broadcastState();   // ★ 关键：把 gameOver 广播出去
+        }
+        render();
+        updateControls();
+        return;
+    }
 
     handNum++;
     table.startHand(Date.now() ^ (handNum * 7919));
