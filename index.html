@@ -557,219 +557,383 @@ function chenScore(c1, c2) {
     return Math.max(0, score);
 }
 
+// ============================================================================
+//  SmartBot —— 底池赔率 + 按对手下注强度折减胜率
+// ============================================================================
+// ============================================================================
+//  Bot —— SmartBot Pro：对手建模 + 温度调整
+// ============================================================================
 class Bot {
+    constructor() {
+        // ---- 基础参数 ----
+        this.iterations = 200;
+        this.rangeDiscount = 0.45;
+        this.callMargin = 0.02;
+        this.valueEquity = 0.56;
+        this.valueRate = 0.65;
+        this.raiseEquity = 0.70;
+        this.raiseRate = 0.55;
+        this.bluffEquity = 0.33;
+        this.bluffRate = 0.22;
+        this.betFrac = 0.55;
+        this.raiseFrac = 0.75;
+        this.slowplayRate = 0.15;
+
+        // ---- 对手建模 ----
+        this.opponents = new Map();    // seat -> {hands, vpip, pfr}
+        this.currentHand = new Map();  // 本手 seat -> {inHand, vpip, pfr}
+        this.lastButton = -1;
+
+        // ---- 温度"性格" ----
+        // 每个 Bot 一局里保持同一个基础性格（0.85~1.15）
+        this.tempBias = 0.85 + Math.random() * 0.3;
+    }
+
+    // ========================================================================
+    //  对手建模
+    // ========================================================================
+    observe(t, mySeat) {
+        // 新的一手：结算上一手
+        if (t.button !== this.lastButton) {
+            for (const [seat, rec] of this.currentHand) {
+                if (rec.inHand) {
+                    const s = this.getStats(seat);
+                    s.hands++;
+                    if (rec.vpip) s.vpip++;
+                    if (rec.pfr) s.pfr++;
+                }
+            }
+            this.currentHand.clear();
+            this.lastButton = t.button;
+        }
+
+        // 更新本手记录
+        for (let i = 0; i < t.numSeats; i++) {
+            if (i === mySeat) continue;
+            const p = t.players[i];
+            if (!p.occupied || !p.inHand) continue;
+
+            let rec = this.currentHand.get(i);
+            if (!rec) {
+                rec = { inHand: true, vpip: false, pfr: false };
+                this.currentHand.set(i, rec);
+            }
+
+            if (t.street === ST_PREFLOP) {
+                // VPIP：翻前主动投钱（跟注或加注）
+                if (p.betRound > 0 && !p.folded) rec.vpip = true;
+                // PFR：翻前加注超过大盲
+                if (p.betRound > t.bigBlind) rec.pfr = true;
+            }
+        }
+    }
+
+    getStats(seat) {
+        let s = this.opponents.get(seat);
+        if (!s) {
+            s = { hands: 0, vpip: 0, pfr: 0 };
+            this.opponents.set(seat, s);
+        }
+        return s;
+    }
+
+    // 返回当前活跃对手的统计：{avgVpip, hands}
+    // 样本不足时用默认 0.35（一般玩家）
+    opponentSummary(t, mySeat) {
+        let totalVpip = 0, count = 0;
+        for (let i = 0; i < t.numSeats; i++) {
+            if (i === mySeat) continue;
+            const p = t.players[i];
+            if (!p.inHand || p.folded) continue;
+            const s = this.getStats(i);
+            if (s.hands >= 3) {
+                totalVpip += s.vpip / s.hands;
+                count++;
+            }
+        }
+        return {
+            avgVpip: count > 0 ? totalVpip / count : 0.35,
+            hands: count
+        };
+    }
+
+    // ========================================================================
+    //  温度调整
+    // ========================================================================
+    // 把概率 p 通过温度 T 变换；T=1 原值；T>1 趋近 0.5；T<1 趋近 0/1
+    tempScale(p, T) {
+        if (T === 1 || p <= 0.001 || p >= 0.999) return p;
+        const logit = Math.log(p / (1 - p));
+        const scaled = logit / T;
+        return 1 / (1 + Math.exp(-scaled));
+    }
+
+    // 根据局势计算当前温度；pressure: 0..1（面对下注时的压力）
+    currentTemp(t, mySeat, pressure) {
+        const me = t.players[mySeat];
+        const spr = t.pot > 0 ? me.stack / t.pot : 10;
+
+        // 基础温度
+        let base = 1.0;
+        if (spr < 3) base = 0.65;
+        else if (spr < 6) base = 0.85;
+        else if (spr > 15) base = 1.15;
+
+        // 面对大注降温
+        base *= (1 - 0.35 * pressure);
+
+        // 小底池升温、大底池降温
+        if (t.pot < t.bigBlind * 5) base *= 1.10;
+        else if (t.pot > t.bigBlind * 40) base *= 0.90;
+
+        // 每次决策的微扰，避免机械重复
+        const noise = 0.90 + Math.random() * 0.20;
+
+        return Math.max(0.3, Math.min(1.8, base * this.tempBias * noise));
+    }
+
+    // ========================================================================
+    //  决策入口
+    // ========================================================================
     decide(t, seat) {
+        const p = t.players[seat];
+        if (!p.inHand || p.folded) return { action: ACT_CHECK, amount: 0 };
+        if (!p.hole[0].valid() || !p.hole[1].valid())
+            return { action: ACT_FOLD, amount: 0 };
+
+        this.observe(t, seat);
+
         if (t.street === ST_PREFLOP) return this.preflop(t, seat);
         return this.postflop(t, seat);
     }
 
-    // ============ 翻前 ============
-    preflop(t, seat) {
-        const p = t.players[seat];
+    // ========================================================================
+    //  工具
+    // ========================================================================
+    relToButton(t, seat) {
+        const n = t.numSeats;
+        return ((seat - t.button) % n + n) % n;
+    }
+
+    liveOpponents(t, seat) {
+        let n = 0;
+        for (let i = 0; i < t.numSeats; i++)
+            if (i !== seat && t.players[i].inHand && !t.players[i].folded) n++;
+        return n;
+    }
+
+    makeRaise(t, p, frac) {
         const toCall = t.currentBet - p.betRound;
-        const cs = chenScore(p.hole[0], p.hole[1]);
-
-        // 位置：相对按钮的距离
-        const rel = (seat - t.button + t.numSeats) % t.numSeats;
-        let th;
-        if (rel === 1) th = 6;         // SB
-        else if (rel === 2) th = 4;    // BB
-        else if (rel === 0) th = 2;    // BTN
-        else {
-            const d = t.numSeats - 1 - rel;   // 距离 CO
-            if (d <= 0) th = 5;               // CO
-            else if (d === 1) th = 7;         // HJ
-            else if (d === 2) th = 9;         // MP
-            else th = 10;                     // UTG
-        }
-
-        const facingRaise = t.currentBet > t.bigBlind * 1.5;
-        const facing3bet = t.currentBet > t.bigBlind * 3.5;
-        if (facing3bet) th += 4;
-        else if (facingRaise) th += 2.5;
-
-        // 活跃对手数
-        const activeOpp = t.players.filter(q => q !== p && q.alive()).length;
-        if (activeOpp >= 3) th += 1;
-        if (activeOpp >= 5) th += 1;
-
-        // 小对子隐含赔率：深码放宽
-        if (!facingRaise && p.hole[0].rank() === p.hole[1].rank()
-            && p.hole[0].rank() <= 5 && p.stack > t.bigBlind * 25)
-            th = Math.min(th, 4);
-
-        // 概率化决策：避免死板
-        const playProb = 1 / (1 + Math.exp(-(cs - th) / 2));
-        if (Math.random() > playProb) {
-            if (toCall === 0) return { action: ACT_CHECK, amount: 0 };
-            return { action: ACT_FOLD, amount: 0 };
-        }
-
-        // BTN 偷盲
-        if (rel === 0 && activeOpp <= 2 && !facingRaise && Math.random() < 0.55) {
-            const target = Math.max(t.bigBlind * 3, t.currentBet + t.minRaise);
-            return { action: ACT_RAISE,
-                     amount: Math.min(target, p.betRound + p.stack) };
-        }
-
-        // 强度 → 加注频率
-        const diff = cs - th;
-        let strength = diff < 2 ? 0 : diff < 4 ? 1 : diff < 7 ? 2 : 3;
-        let raiseProb = [0.12, 0.38, 0.75, 0.65][strength];
-        if (rel === 0) raiseProb += 0.20;
-        else if (rel === t.numSeats - 1) raiseProb += 0.12;
-
-        if (p.stack > toCall && Math.random() < Math.min(1, raiseProb)) {
-            let target = Math.max(t.bigBlind * 3, t.currentBet + t.minRaise);
-            target = Math.min(target, p.betRound + p.stack);
-            return { action: t.currentBet === 0 ? ACT_BET : ACT_RAISE, amount: target };
-        }
-        if (toCall === 0) return { action: ACT_CHECK, amount: 0 };
-        return { action: ACT_CALL, amount: 0 };
-    }
-
-    // ============ 翻后（强化版） ============
-    postflop(t, seat) {
-        const p = t.players[seat];
-        const toCall = t.currentBet - p.betRound;
-
-        // 7 张牌评估
-        const seven = [
-            p.hole[0].v, p.hole[1].v,
-            t.board[0].v, t.board[1].v, t.board[2].v,
-            t.board[3].v, t.board[4].v
-        ];
-        const code = eval7(seven);
-        const cat = code >> 20;
-        const topRank = (code >> 16) & 0xF;
-
-        // ---------- 精确强度（0-100） ----------
-        let strength = 0;
-        switch (cat) {
-            case 0:  // 高牌
-                strength = 8 + topRank * 2;        // 8-32
-                break;
-            case 1:  // 一对
-                // 顶对 vs 中对 vs 底对用 topRank 粗略区分
-                strength = 35 + topRank * 2;       // 35-59
-                break;
-            case 2:  // 两对
-                strength = 62 + topRank * 1.5;     // 62-80
-                break;
-            case 3:  // 三条
-                strength = 82;
-                break;
-            case 4:  // 顺子
-                strength = 88;
-                break;
-            case 5:  // 同花
-                strength = 91;
-                break;
-            case 6:  // 葫芦
-                strength = 94;
-                break;
-            case 7:  // 四条
-                strength = 97;
-                break;
-            case 8:  // 同花顺
-                strength = 100;
-                break;
-        }
-
-        // 位置感知
-        const ip = this.hasPosition(t, seat);
-
-        // 底池赔率 / SPR
-        const pot = t.pot;
-        const need = toCall > 0 ? toCall / (pot + toCall) : 0;
-        const spr = pot > 0 ? p.stack / pot : 100;
-
-        // ---------- 无人下注 ----------
-        if (toCall === 0) {
-            // 超强牌
-            if (strength >= 85) {
-                if (Math.random() < 0.85) return this.bet(t, p, 0.65);
-                return { action: ACT_CHECK, amount: 0 };
-            }
-            // 强牌
-            if (strength >= 60) {
-                if (Math.random() < 0.75) return this.bet(t, p, 0.55);
-                return { action: ACT_CHECK, amount: 0 };
-            }
-            // 中等
-            if (strength >= 40) {
-                if (Math.random() < 0.55) return this.bet(t, p, 0.45);
-                return { action: ACT_CHECK, amount: 0 };
-            }
-            // 弱牌：诈唬（IP 更频繁）
-            const bluffRate = ip ? 0.28 : 0.18;
-            if (Math.random() < bluffRate) return this.bet(t, p, 0.5);
-            return { action: ACT_CHECK, amount: 0 };
-        }
-
-        // ---------- 面对下注 ----------
-        // 极强：加注
-        if (strength >= 88) {
-            if (Math.random() < 0.72 && p.stack > toCall * 2) {
-                const target = Math.max(t.currentBet * 3, t.currentBet + t.minRaise);
-                return { action: ACT_RAISE,
-                         amount: Math.min(target, p.betRound + p.stack) };
-            }
-            return { action: ACT_CALL, amount: 0 };
-        }
-        // 强牌：跟为主，偶尔加
-        if (strength >= 72) {
-            if (Math.random() < 0.28 && p.stack > toCall * 2) {
-                const target = t.currentBet + t.minRaise;
-                return { action: ACT_RAISE,
-                         amount: Math.min(target, p.betRound + p.stack) };
-            }
-            return { action: ACT_CALL, amount: 0 };
-        }
-        // 中等：按赔率跟
-        if (strength >= 50) {
-            if (need < 0.4) return { action: ACT_CALL, amount: 0 };
-            if (Math.random() < 0.08 && ip) {
-                const target = t.currentBet + t.minRaise;
-                return { action: ACT_RAISE,
-                         amount: Math.min(target, p.betRound + p.stack) };
-            }
-            return { action: ACT_FOLD, amount: 0 };
-        }
-        // 弱牌：看赔率，偶尔半诈唬
-        if (strength >= 30) {
-            if (need < 0.25 && Math.random() < 0.5) {
-                return { action: ACT_CALL, amount: 0 };
-            }
-            return { action: ACT_FOLD, amount: 0 };
-        }
-        // 极弱：偶尔诈唬
-        if (Math.random() < 0.06 && ip && p.stack > toCall * 4) {
-            const target = t.currentBet + t.minRaise;
-            return { action: ACT_RAISE,
-                     amount: Math.min(target, p.betRound + p.stack) };
-        }
-        return { action: ACT_FOLD, amount: 0 };
-    }
-
-    // ============ 位置判断 ============
-    hasPosition(t, seat) {
-        // 后面没有活跃玩家 = 我在最后行动
-        for (let i = 1; i < t.numSeats; i++) {
-            const s = (seat + i) % t.numSeats;
-            if (t.players[s].alive()) return false;
-        }
-        return true;
-    }
-
-    // ============ 下注尺度 ============
-    bet(t, p, frac) {
-        let target = t.currentBet + Math.floor(t.pot * frac);
+        let target = t.currentBet <= 0
+            ? Math.floor(t.pot * frac)
+            : t.currentBet + Math.floor((t.pot + toCall) * frac);
         const lo = t.currentBet + t.minRaise;
         const hi = p.betRound + p.stack;
         target = Math.max(lo, Math.min(target, hi));
         if (target >= hi) return { action: ACT_ALLIN, amount: 0 };
         return { action: t.currentBet === 0 ? ACT_BET : ACT_RAISE, amount: target };
+    }
+
+    // ========================================================================
+    //  翻前
+    // ========================================================================
+    preflop(t, seat) {
+        const p = t.players[seat];
+        const toCall = t.currentBet - p.betRound;
+        const n = t.numSeats;
+        const rel = this.relToButton(t, seat);
+        const btn = rel === 0;
+        const sb = rel === 1;
+        const nOpp = this.liveOpponents(t, seat);
+        const cs = chenScore(p.hole[0], p.hole[1]);
+
+        const unraised = t.currentBet <= t.bigBlind;
+        const facing3bet = t.currentBet > t.bigBlind * 3;
+
+        // 对手建模：面对紧对手的加注要更谨慎
+        const oppSummary = this.opponentSummary(t, seat);
+        let tightnessAdjust = 0;
+        if (oppSummary.hands >= 5) {
+            if (oppSummary.avgVpip < 0.25) tightnessAdjust = 1.5;      // 对手很紧
+            else if (oppSummary.avgVpip > 0.55) tightnessAdjust = -1.0; // 对手很松
+        }
+
+        // 免费看牌
+        if (toCall === 0) {
+            if (cs >= 9 && Math.random() < 0.30) return this.makeRaise(t, p, 0.9);
+            return { action: ACT_CHECK, amount: 0 };
+        }
+
+        // 入池门槛
+        let th;
+        if (n === 2) {
+            th = btn ? 1.2 : 1.8;
+            if (!unraised) th = 5.5;
+            if (facing3bet) th = 9.5;
+        } else {
+            th = btn ? 2.2 : (sb ? 3.0 : 5.5);
+            if (!unraised) th += 3.0;
+            if (facing3bet) th += 3.0;
+            if (nOpp >= 3) th += 0.8;
+            if (nOpp >= 5) th += 0.8;
+        }
+        if (!unraised) th += tightnessAdjust;
+
+        if (cs < th) {
+            if (toCall <= t.bigBlind && cs >= th - 2 && Math.random() < 0.60)
+                return { action: ACT_CALL, amount: 0 };
+            return { action: ACT_FOLD, amount: 0 };
+        }
+
+        // 加注频率（加温度扰动）
+        const T = this.currentTemp(t, seat, 0);
+        let rp = 0.35 + 0.06 * (cs - th);
+        if (btn) rp += 0.20;
+        if (sb) rp += 0.10;
+        if (n === 2) rp += 0.15;
+        if (!unraised) rp += 0.15;
+        if (rp > 0.90) rp = 0.90;
+        rp = this.tempScale(rp, T);
+
+        if (p.stack > toCall && Math.random() < rp)
+            return this.makeRaise(t, p, 1.0);
+        return { action: ACT_CALL, amount: 0 };
+    }
+
+    // ========================================================================
+    //  翻后
+    // ========================================================================
+    postflop(t, seat) {
+        const p = t.players[seat];
+        const toCall = t.currentBet - p.betRound;
+        const pot = t.pot;
+        const need = toCall > 0 ? toCall / (pot + toCall) : 0;
+        const ip = this.relToButton(t, seat) === 0;
+
+        const eqRaw = this.equity(t, seat);
+
+        // ---- 对手建模：调整折减系数 ----
+        const oppSummary = this.opponentSummary(t, seat);
+        let rangeDiscount = this.rangeDiscount;
+        if (oppSummary.hands >= 5) {
+            // 松对手 → 折减小；紧对手 → 折减大
+            const factor = 1 + (0.35 - oppSummary.avgVpip) * 2.5;
+            rangeDiscount *= Math.max(0.5, Math.min(1.8, factor));
+        }
+
+        // ---- 下注压力 ----
+        let pressure = 0;
+        if (toCall > 0) {
+            pressure = toCall / Math.max(pot, t.bigBlind);
+            if (pressure > 1.5) pressure = 1.5;
+            pressure /= 1.5;
+        }
+        const eq = eqRaw * (1 - rangeDiscount * pressure);
+
+        // ---- 温度 ----
+        const T = this.currentTemp(t, seat, pressure);
+
+        // ---- 对手建模：调整诈唬/价值频率 ----
+        let bluffAdjust = 1, valueAdjust = 1;
+        if (oppSummary.hands >= 5) {
+            if (oppSummary.avgVpip > 0.5) {
+                // 松对手是跟注站 → 少诈唬，多价值
+                bluffAdjust = 0.5;
+                valueAdjust = 1.2;
+            } else if (oppSummary.avgVpip < 0.25) {
+                // 紧对手爱弃牌 → 多诈唬
+                bluffAdjust = 1.5;
+                valueAdjust = 1.0;
+            }
+        }
+
+        // ---------- 无人下注 ----------
+        if (toCall === 0) {
+            if (eq > 0.80) {
+                const slow = this.tempScale(this.slowplayRate, T);
+                if (Math.random() < slow) return { action: ACT_CHECK, amount: 0 };
+                return this.makeRaise(t, p, 0.75);
+            }
+            if (eq > this.valueEquity) {
+                let f = ip ? this.valueRate : this.valueRate * 0.8;
+                f *= valueAdjust;
+                f = this.tempScale(f, T);
+                if (f > 0.95) f = 0.95;
+                if (Math.random() < f) return this.makeRaise(t, p, this.betFrac);
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            if (eq < this.bluffEquity) {
+                let f = ip ? this.bluffRate : this.bluffRate * 0.6;
+                f *= bluffAdjust;
+                f = this.tempScale(f, T);
+                if (Math.random() < f) return this.makeRaise(t, p, this.betFrac);
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            return { action: ACT_CHECK, amount: 0 };
+        }
+
+        // ---------- 面对下注 ----------
+        if (eq > need + this.callMargin) {
+            const canRaise = p.stack > toCall * 2;
+            let rf = this.raiseRate;
+            if (pot > 0 && p.stack / pot > 10) rf += 0.10;
+            rf = this.tempScale(rf, T);
+            if (canRaise && eq > this.raiseEquity && Math.random() < rf)
+                return this.makeRaise(t, p, this.raiseFrac);
+            return { action: ACT_CALL, amount: 0 };
+        }
+        return { action: ACT_FOLD, amount: 0 };
+    }
+
+    // ========================================================================
+    //  蒙特卡洛胜率
+    // ========================================================================
+    equity(t, seat) {
+        const me = t.players[seat];
+        const h0 = me.hole[0].v;
+        const h1 = me.hole[1].v;
+
+        const used = new Set([h0, h1]);
+        for (let i = 0; i < t.boardCount; i++) used.add(t.board[i].v);
+
+        const pool = [];
+        for (let v = 0; v < 52; v++) if (!used.has(v)) pool.push(v);
+
+        const nOpp = this.liveOpponents(t, seat);
+        if (nOpp === 0) return 1.0;
+
+        const board = new Array(5);
+        for (let i = 0; i < t.boardCount; i++) board[i] = t.board[i].v;
+        const boardNeed = 5 - t.boardCount;
+
+        let score = 0;
+        const iter = this.iterations;
+
+        const work = pool.slice();
+        const workLen = work.length;
+        const needed = boardNeed + nOpp * 2;
+
+        for (let it = 0; it < iter; it++) {
+            for (let i = 0; i < needed; i++) {
+                const j = i + Math.floor(Math.random() * (workLen - i));
+                const tmp = work[i]; work[i] = work[j]; work[j] = tmp;
+            }
+
+            let idx = 0;
+            for (let i = t.boardCount; i < 5; i++) board[i] = work[idx++];
+
+            const mine = eval7(h0, h1, board[0], board[1], board[2], board[3], board[4]);
+
+            let better = 0, equal = 0;
+            for (let k = 0; k < nOpp; k++) {
+                const o0 = work[idx++], o1 = work[idx++];
+                const ov = eval7(o0, o1, board[0], board[1], board[2], board[3], board[4]);
+                if (ov > mine) { better = 1; break; }
+                if (ov === mine) equal++;
+            }
+            if (!better) score += 1.0 / (equal + 1);
+        }
+        return score / iter;
     }
 }
 // ============================================================================
