@@ -10,7 +10,7 @@ body{margin:0;background:#14171c;color:#e8e8e8;font-family:"Microsoft YaHei",san
 #app{max-width:1100px;margin:0 auto;padding:12px}
 #status{text-align:center;font-size:20px;font-weight:bold;padding:8px;color:#f0c040;min-height:30px}
 #table{display:block;width:100%;height:auto;max-width:1100px;margin:0 auto;background:#14171c;border-radius:8px}
-#log{margin:12px 0;padding:10px 16px;background:#1e222a;border-radius:6px;font-size:14px;line-height:1.7;min-height:60px;max-height:120px;overflow-y:auto;color:#b0b8c0}
+#log{margin:12px 0;padding:10px 16px;background:#1e222a;border-radius:6px;font-size:13px;line-height:1.8;min-height:80px;max-height:160px;overflow-y:auto;color:#b0b8c0;white-space:pre-wrap;font-family:Consolas,"Microsoft YaHei",monospace}
 .controls{display:flex;gap:10px;justify-content:center;padding:12px;flex-wrap:wrap}
 button{padding:10px 22px;font-size:15px;border-radius:6px;border:1px solid #3a4050;background:#252b38;color:#e8e8e8;cursor:pointer;font-family:inherit}
 button:hover:not(:disabled){background:#303748}
@@ -48,7 +48,7 @@ input:focus,select:focus{outline:none;border-color:#4a70b0}
   #roomCode{font-size:36px;letter-spacing:6px;margin:12px 0}
   #joinCode{font-size:22px;width:160px;letter-spacing:4px}
   #status{font-size:15px;padding:4px;min-height:22px}
-  #log{font-size:12px;min-height:44px;max-height:80px;padding:6px 10px;margin:6px 0}
+  #log{font-size:11px;min-height:50px;max-height:100px;padding:6px 10px;margin:6px 0}
   .controls{padding:6px;gap:6px}
   .controls button{padding:8px 12px;font-size:13px}
   .controls input{width:64px;font-size:14px;padding:6px}
@@ -140,11 +140,8 @@ class Card {
 const INV = new Card(0xFF);
 
 // ============================================================================
-//  Evaluator（优化版）
+//  Evaluator
 // ============================================================================
-const ST_HIGH=0,ST_PAIR=1,ST_TWO_PAIR=2,ST_TRIPS=3,ST_STRAIGHT=4,
-      ST_FLUSH=5,ST_FULL_HOUSE=6,ST_QUADS=7,ST_STRAIGHT_FLUSH=8;
-
 function eval5(a, b, c, d, e) {
     const ra = a >> 2, rb = b >> 2, rc = c >> 2, rd = d >> 2, re = e >> 2;
     const rm = (1 << ra) | (1 << rb) | (1 << rc) | (1 << rd) | (1 << re);
@@ -249,6 +246,7 @@ class Table {
         this.deck = [];
         this.rngState = 0x12345678;
         this.wentToShowdown = false;
+        this.preflopAggressor = -1;
     }
     rng() {
         let x = this.rngState;
@@ -284,6 +282,7 @@ class Table {
     startHand(seed) {
         this.rngState = seed >>> 0 || 0x12345678;
         this.wentToShowdown = false;
+        this.preflopAggressor = -1;
         for (const p of this.players) {
             p.inHand = p.occupied && p.stack > 0;
             p.folded = false; p.allIn = false; p.acted = false;
@@ -333,6 +332,7 @@ class Table {
     act(action, amount = 0) {
         if (this.toAct < 0 || this.street === ST_OVER) return;
         const p = this.players[this.toAct];
+        const actorSeat = this.toAct;
         switch (action) {
             case ACT_FOLD: p.folded = true; p.acted = true; this.activeCount--; break;
             case ACT_CHECK: p.acted = true; break;
@@ -361,7 +361,9 @@ class Table {
                     }
                 }
                 if (p.stack === 0) p.allIn = true;
-                p.acted = true; break;
+                p.acted = true;
+                if (this.street === ST_PREFLOP) this.preflopAggressor = actorSeat;
+                break;
             }
             case ACT_ALLIN: {
                 const delta = p.stack;
@@ -378,7 +380,9 @@ class Table {
                             if (q !== p && q.canAct()) q.acted = false;
                     }
                 }
-                p.acted = true; break;
+                p.acted = true;
+                if (this.street === ST_PREFLOP) this.preflopAggressor = actorSeat;
+                break;
             }
         }
         if (this.activeCount <= 1) { this.awardLastAlive(); return; }
@@ -521,7 +525,6 @@ const GTO_RANGES = {
         vsRaise: "AA KK QQ JJ TT 99 88 77 66 55 AKs AQs AJs ATs A9s A8s A7s A6s A5s A4s A3s A2s KQs KJs KTs K9s K8s K7s K6s QJs QTs Q9s JTs J9s T9s 98s 87s 76s 65s AKo AQo AJo ATo A9o A8o KQo KJo KTo K9o QJo QTo JTo",
         vs3bet:  "AA KK QQ JJ TT AKs AQs AJs AKo AQo"
     },
-    // 9 人桌
     EARLY9: {
         open:    "AA KK QQ JJ TT 99 AKs AQs AJs ATs A5s KQs AKo AQo",
         vsRaise: "AA KK QQ JJ TT AKs AQs AKo",
@@ -569,6 +572,22 @@ function handStrength01(c0, c1) {
     let r0 = c0.rank(), r1 = c1.rank();
     if (r0 < r1) { const t = r0; r0 = r1; r1 = t; }
     const suited = c0.suit() === c1.suit();
+    if (r0 === r1) return 0.55 + (r0 / 12) * 0.45;
+    let s = (r0 / 12) * 0.55 + (r1 / 12) * 0.25;
+    if (suited) s += 0.10;
+    const gap = r0 - r1 - 1;
+    if (gap === 0) s += 0.15;
+    else if (gap === 1) s += 0.10;
+    else if (gap === 2) s += 0.04;
+    else if (gap >= 4) s -= 0.08;
+    if (r0 >= 10 && r1 >= 9) s += 0.05;
+    return Math.max(0, Math.min(1, s));
+}
+
+function handStrengthRaw(v0, v1) {
+    let r0 = v0 >> 2, r1 = v1 >> 2;
+    if (r0 < r1) { const t = r0; r0 = r1; r1 = t; }
+    const suited = (v0 & 3) === (v1 & 3);
     if (r0 === r1) return 0.55 + (r0 / 12) * 0.45;
     let s = (r0 / 12) * 0.55 + (r1 / 12) * 0.25;
     if (suited) s += 0.10;
@@ -635,11 +654,95 @@ function boardTexture(board, boardCount) {
 }
 
 // ============================================================================
+//  翻后牌型分类
+// ============================================================================
+function checkFlushDraw(hole, board, boardCount) {
+    const counts = [0, 0, 0, 0];
+    for (const c of hole) counts[c.suit()]++;
+    for (let i = 0; i < boardCount; i++) counts[board[i].suit()]++;
+    for (let i = 0; i < 4; i++) if (counts[i] === 4) return true;
+    return false;
+}
+
+function checkStraightDraw(hole, board, boardCount) {
+    const ranks = new Set();
+    ranks.add(hole[0].rank());
+    ranks.add(hole[1].rank());
+    for (let i = 0; i < boardCount; i++) ranks.add(board[i].rank());
+    const arr = [...ranks];
+    if (arr.includes(12)) arr.push(-1);
+    arr.sort((a, b) => a - b);
+    for (let i = 0; i < arr.length - 3; i++) {
+        const span = arr[i + 3] - arr[i];
+        if (span === 3) return 'oesd';
+        if (span === 4) return 'gutshot';
+    }
+    return null;
+}
+
+function classifyPostflop(hole, board, boardCount) {
+    if (boardCount < 3) return { type: 'preflop', strength: 0 };
+
+    const myCode = eval7(hole[0].v, hole[1].v,
+        board[0].v, board[1].v, board[2].v,
+        board[3].v, board[4].v);
+    const myCat = myCode >> 20;
+
+    const boardRanks = [];
+    for (let i = 0; i < boardCount; i++) boardRanks.push(board[i].rank());
+    const sortedBoard = boardRanks.slice().sort((a, b) => b - a);
+
+    const r0 = hole[0].rank(), r1 = hole[1].rank();
+    const isPocket = (r0 === r1);
+    const r0OnBoard = boardRanks.includes(r0);
+    const r1OnBoard = boardRanks.includes(r1);
+
+    if (myCat >= 5) return { type: 'monster', strength: 95 };
+    if (myCat === 4) return { type: 'monster', strength: 88 };
+    if (myCat === 3) {
+        if (isPocket && r0OnBoard) return { type: 'set', strength: 92 };
+        return { type: 'trips', strength: 85 };
+    }
+    if (myCat === 2) {
+        const isTopTwo = sortedBoard.length >= 2
+            && r0OnBoard && r1OnBoard;
+        if (isTopTwo) return { type: 'two_pair', strength: 78 };
+        return { type: 'two_pair_weak', strength: 70 };
+    }
+    if (myCat === 1) {
+        if (isPocket) {
+            const boardMax = Math.max(...boardRanks);
+            if (r0 > boardMax) return { type: 'overpair', strength: 68 };
+            if (r0 < Math.min(...boardRanks)) return { type: 'underpair', strength: 32 };
+            return { type: 'middle_pair', strength: 48 };
+        }
+        if (r0OnBoard || r1OnBoard) {
+            const pairRank = r0OnBoard ? r0 : r1;
+            const kicker = r0OnBoard ? r1 : r0;
+            const isTop = pairRank === sortedBoard[0];
+            if (isTop && kicker === 12) return { type: 'tptk', strength: 72 };
+            if (isTop) return { type: 'top_pair', strength: 60 };
+            if (pairRank === sortedBoard[1]) return { type: 'middle_pair', strength: 45 };
+            return { type: 'bottom_pair', strength: 38 };
+        }
+        return { type: 'paired_board', strength: 42 };
+    }
+
+    const fd = checkFlushDraw(hole, board, boardCount);
+    const sd = checkStraightDraw(hole, board, boardCount);
+    if (fd && sd) return { type: 'combo_draw', strength: 45 };
+    if (fd) return { type: 'flush_draw', strength: 36 };
+    if (sd === 'oesd') return { type: 'straight_draw', strength: 32 };
+    if (sd === 'gutshot') return { type: 'gutshot', strength: 22 };
+    return { type: 'air', strength: 12 };
+}
+
+// ============================================================================
 //  Bot —— SmartBot X
 // ============================================================================
 class Bot {
     constructor() {
-        this.iterations = 250;
+        this.iterations = 800;
         this.valueEquity = 0.58;
         this.raiseEquity = 0.72;
         this.raiseRate = 0.60;
@@ -662,9 +765,13 @@ class Bot {
             return { action: ACT_FOLD, amount: 0 };
         this.observe(t, seat);
         if (t.street === ST_PREFLOP) return this.preflop(t, seat);
-        return this.postflop(t, seat);
+        if (t.street === ST_FLOP) return this.flopStrategy(t, seat);
+        if (t.street === ST_TURN) return this.turnStrategy(t, seat);
+        if (t.street === ST_RIVER) return this.riverStrategy(t, seat);
+        return { action: ACT_CHECK, amount: 0 };
     }
 
+    // ===================== 翻前 =====================
     preflop(t, seat) {
         const p = t.players[seat];
         const toCall = t.currentBet - p.betRound;
@@ -707,7 +814,6 @@ class Bot {
         const range = getRange(pos, kind);
         const hs = handToStr(p.hole[0], p.hole[1]);
         const inRange = range.has(hs);
-
         const T = this.currentTemp(t, seat, 0);
 
         if (!inRange) {
@@ -734,107 +840,258 @@ class Bot {
         return { action: ACT_CALL, amount: 0 };
     }
 
-    postflop(t, seat) {
+    // ===================== 通用情境 =====================
+    situation(t, seat) {
         const p = t.players[seat];
         const toCall = t.currentBet - p.betRound;
         const pot = t.pot;
         const need = toCall > 0 ? toCall / (pot + toCall) : 0;
         const ip = this.relToButton(t, seat) === 0;
+        const hand = classifyPostflop(p.hole, t.board, t.boardCount);
+        const eq = this.equityWithRange(t, seat);
+        const opponentCount = this.liveOpponents(t, seat);
+        const multiway = opponentCount >= 2;
+        const isAggressor = t.preflopAggressor === seat;
         const texture = boardTexture(t.board, t.boardCount);
+        const press = toCall > 0 ? Math.min(toCall / Math.max(pot, t.bigBlind), 1.5) / 1.5 : 0;
+        const T = this.currentTemp(t, seat, press);
+        return {
+            p, toCall, pot, need, ip, hand, eq, opponentCount, multiway,
+            isAggressor, texture, T,
+            type: hand.type,
+            streetsLeft: 5 - t.boardCount + 1,
+        };
+    }
 
-        const eqRaw = this.equityWithRange(t, seat);
-        const blocker = blockerAdjust(p.hole, t.board, t.boardCount);
-        const eqAdjusted = Math.max(0, Math.min(1, eqRaw + blocker * 0.5));
-
-        const oppSummary = this.opponentSummary(t, seat);
-        let rangeDiscount = 0.42;
-        if (oppSummary.hands >= 5) {
-            const factor = 1 + (0.35 - oppSummary.avgVpip) * 2.5;
-            rangeDiscount *= Math.max(0.5, Math.min(1.8, factor));
-        }
-
-        let pressure = 0;
-        if (toCall > 0) {
-            pressure = toCall / Math.max(pot, t.bigBlind);
-            if (pressure > 1.5) pressure = 1.5;
-            pressure /= 1.5;
-        }
-        const eq = eqAdjusted * (1 - rangeDiscount * pressure);
-        const T = this.currentTemp(t, seat, pressure);
-
-        const streetsLeft = 5 - t.boardCount + 1;
-        const geoFrac = geoBetFrac(pot, p.stack, streetsLeft);
+    // ===================== 翻牌策略 =====================
+    flopStrategy(t, seat) {
+        const s = this.situation(t, seat);
+        const { p, toCall, pot, need, ip, type, eq, multiway, isAggressor, texture, T } = s;
 
         if (toCall === 0) {
-            if (eq > 0.82) {
-                let slow = this.slowplayRate;
-                if (!ip) slow *= 1.3;
-                slow = this.tempScale(slow, T);
-                if (Math.random() < slow) return { action: ACT_CHECK, amount: 0 };
-                const frac = Math.max(geoFrac * 0.9, 0.55);
-                return this.makeRaise(t, p, frac);
+            if (type === 'monster' || type === 'set' || type === 'trips') {
+                if (Math.random() < this.tempScale(this.slowplayRate * (ip ? 1.2 : 0.8), T))
+                    return { action: ACT_CHECK, amount: 0 };
+                return this.makeRaise(t, p, texture > 0.5 ? 0.75 : 0.60);
             }
-            if (eq > this.valueEquity) {
-                const f = this.tempScale(ip ? 0.75 : 0.60, T);
-                if (Math.random() < f) {
-                    const frac = texture > 0.5 ? geoFrac * 0.9 : geoFrac * 0.75;
-                    return this.makeRaise(t, p, Math.max(frac, 0.4));
-                }
+            if (type === 'two_pair' || type === 'two_pair_weak') {
+                if (Math.random() < this.tempScale(0.75, T))
+                    return this.makeRaise(t, p, 0.55);
                 return { action: ACT_CHECK, amount: 0 };
             }
-            if (eq > 0.45) {
-                const f = ip ? 0.55 : 0.28;
-                if (Math.random() < this.tempScale(f, T))
-                    return this.makeRaise(t, p, 0.42);
+            if (type === 'overpair' || type === 'tptk' || type === 'top_pair') {
+                let cb = isAggressor ? 0.75 : 0.55;
+                if (multiway) cb *= 0.6;
+                if (texture > 0.5) cb *= 0.85;
+                if (Math.random() < this.tempScale(cb, T))
+                    return this.makeRaise(t, p, texture > 0.5 ? 0.65 : 0.50);
                 return { action: ACT_CHECK, amount: 0 };
             }
-            if (eq < this.bluffEquity) {
-                const bf = ip ? 0.30 : 0.20;
-                if (Math.random() < this.tempScale(bf * this.aggressionBias, T))
-                    return this.makeRaise(t, p, Math.max(geoFrac, 0.5));
+            if (type === 'middle_pair' || type === 'bottom_pair'
+                || type === 'underpair' || type === 'paired_board') {
+                if (isAggressor && Math.random() < this.tempScale(0.30, T) && !multiway)
+                    return this.makeRaise(t, p, 0.35);
                 return { action: ACT_CHECK, amount: 0 };
             }
-            if (!ip && Math.random() < this.probeRate * 0.4)
-                return this.makeRaise(t, p, 0.45);
+            if (type === 'combo_draw' || type === 'flush_draw'
+                || type === 'straight_draw' || type === 'gutshot') {
+                let semiBluff = type === 'combo_draw' ? 0.65
+                              : type === 'flush_draw' ? 0.55
+                              : type === 'straight_draw' ? 0.50 : 0.30;
+                if (multiway) semiBluff *= 0.5;
+                if (Math.random() < this.tempScale(semiBluff * this.aggressionBias, T))
+                    return this.makeRaise(t, p, 0.60);
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            if (isAggressor && !multiway && texture < 0.4) {
+                if (Math.random() < this.tempScale(0.18 * this.aggressionBias, T))
+                    return this.makeRaise(t, p, 0.50);
+            }
             return { action: ACT_CHECK, amount: 0 };
         }
 
-        const spr = pot > 0 ? p.stack / pot : 100;
-        if (spr < 3) {
-            if (eq > 0.55) return { action: ACT_CALL, amount: 0 };
-            if (eq > 0.45 && need < 0.30) return { action: ACT_CALL, amount: 0 };
+        if (type === 'monster' || type === 'set' || type === 'trips') {
+            if (Math.random() < this.tempScale(ip ? 0.75 : 0.60, T) && p.stack > toCall) {
+                const target = Math.max(t.currentBet * 3, t.currentBet + t.minRaise);
+                return { action: ACT_RAISE, amount: Math.min(target, p.betRound + p.stack) };
+            }
+            return { action: ACT_CALL, amount: 0 };
+        }
+        if (type === 'two_pair' || type === 'two_pair_weak') {
+            if (Math.random() < this.tempScale(0.25, T) && p.stack > toCall * 2) {
+                const target = t.currentBet + t.minRaise;
+                return { action: ACT_RAISE, amount: Math.min(target, p.betRound + p.stack) };
+            }
+            return { action: ACT_CALL, amount: 0 };
+        }
+        if (type === 'overpair' || type === 'tptk' || type === 'top_pair') {
+            if (toCall > pot * 0.8 && type !== 'tptk') {
+                if (eq < 0.40 || Math.random() < 0.35) return { action: ACT_FOLD, amount: 0 };
+            }
+            if (multiway && toCall > pot * 0.6) return { action: ACT_FOLD, amount: 0 };
+            return { action: ACT_CALL, amount: 0 };
+        }
+        if (type === 'middle_pair' || type === 'bottom_pair'
+            || type === 'underpair' || type === 'paired_board') {
+            if (multiway) return { action: ACT_FOLD, amount: 0 };
+            if (toCall < pot * 0.4 && eq > need + 0.08)
+                return { action: ACT_CALL, amount: 0 };
             return { action: ACT_FOLD, amount: 0 };
         }
-
-        if (eq > 0.85) {
-            const rp = this.tempScale(ip ? 0.78 : 0.62, T);
-            if (Math.random() < rp && p.stack > toCall) {
-                const target = Math.max(t.currentBet * 3, t.currentBet + t.minRaise);
-                return { action: ACT_RAISE,
-                         amount: Math.min(target, p.betRound + p.stack) };
+        if (type === 'combo_draw' || type === 'flush_draw'
+            || type === 'straight_draw' || type === 'gutshot') {
+            const drawEq = type === 'combo_draw' ? 0.50
+                         : type === 'flush_draw' ? 0.36
+                         : type === 'straight_draw' ? 0.32 : 0.17;
+            const implied = 0.12;
+            if (drawEq + implied > need) {
+                if (Math.random() < this.tempScale(ip ? 0.25 : 0.12, T) && p.stack > toCall * 3) {
+                    const target = t.currentBet + t.minRaise;
+                    return { action: ACT_RAISE, amount: Math.min(target, p.betRound + p.stack) };
+                }
+                return { action: ACT_CALL, amount: 0 };
             }
-            return { action: ACT_CALL, amount: 0 };
-        }
-        if (eq > 0.70) {
-            const rr = this.tempScale(0.25 * this.aggressionBias, T);
-            if (Math.random() < rr && p.stack > toCall * 2) {
-                const target = t.currentBet + t.minRaise;
-                return { action: ACT_RAISE,
-                         amount: Math.min(target, p.betRound + p.stack) };
-            }
-            return { action: ACT_CALL, amount: 0 };
-        }
-        if (eq > need + 0.05) return { action: ACT_CALL, amount: 0 };
-
-        const br = this.tempScale((ip ? 0.10 : 0.04) * this.aggressionBias, T);
-        if (Math.random() < br && p.stack > toCall * 4) {
-            const target = t.currentBet + t.minRaise;
-            return { action: ACT_RAISE,
-                     amount: Math.min(target, p.betRound + p.stack) };
+            return { action: ACT_FOLD, amount: 0 };
         }
         return { action: ACT_FOLD, amount: 0 };
     }
 
+    // ===================== 转牌策略 =====================
+    turnStrategy(t, seat) {
+        const s = this.situation(t, seat);
+        const { p, toCall, pot, need, ip, type, eq, multiway, isAggressor, texture, T } = s;
+
+        if (toCall === 0) {
+            if (type === 'monster' || type === 'set' || type === 'trips') {
+                if (Math.random() < this.tempScale(this.slowplayRate * 0.7, T))
+                    return { action: ACT_CHECK, amount: 0 };
+                return this.makeRaise(t, p, 0.75);
+            }
+            if (type === 'two_pair' || type === 'two_pair_weak') {
+                if (Math.random() < this.tempScale(0.70, T))
+                    return this.makeRaise(t, p, 0.65);
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            if (type === 'overpair' || type === 'tptk' || type === 'top_pair') {
+                let cb = ip ? 0.65 : 0.45;
+                if (multiway) cb *= 0.5;
+                if (Math.random() < this.tempScale(cb, T))
+                    return this.makeRaise(t, p, 0.60);
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            if (type === 'middle_pair' || type === 'bottom_pair' || type === 'underpair') {
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            if (type === 'combo_draw' || type === 'flush_draw'
+                || type === 'straight_draw' || type === 'gutshot') {
+                let semiBluff = type === 'combo_draw' ? 0.60
+                              : type === 'flush_draw' ? 0.50
+                              : type === 'straight_draw' ? 0.45 : 0.20;
+                if (multiway) semiBluff *= 0.5;
+                if (Math.random() < this.tempScale(semiBluff * this.aggressionBias, T))
+                    return this.makeRaise(t, p, 0.65);
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            if (isAggressor && !multiway && texture < 0.35) {
+                if (Math.random() < this.tempScale(0.15, T))
+                    return this.makeRaise(t, p, 0.55);
+            }
+            return { action: ACT_CHECK, amount: 0 };
+        }
+
+        if (type === 'monster' || type === 'set' || type === 'trips') {
+            if (Math.random() < this.tempScale(0.80, T) && p.stack > toCall) {
+                const target = Math.max(t.currentBet * 3, t.currentBet + t.minRaise);
+                return { action: ACT_RAISE, amount: Math.min(target, p.betRound + p.stack) };
+            }
+            return { action: ACT_CALL, amount: 0 };
+        }
+        if (type === 'two_pair' || type === 'two_pair_weak') {
+            if (Math.random() < this.tempScale(0.30, T) && p.stack > toCall * 2) {
+                const target = t.currentBet + t.minRaise;
+                return { action: ACT_RAISE, amount: Math.min(target, p.betRound + p.stack) };
+            }
+            return { action: ACT_CALL, amount: 0 };
+        }
+        if (type === 'overpair' || type === 'tptk' || type === 'top_pair') {
+            if (multiway && toCall > pot * 0.5) return { action: ACT_FOLD, amount: 0 };
+            if (toCall > pot * 0.9 && type === 'top_pair') return { action: ACT_FOLD, amount: 0 };
+            if (eq > need + 0.10) return { action: ACT_CALL, amount: 0 };
+            return { action: ACT_FOLD, amount: 0 };
+        }
+        if (type === 'middle_pair' || type === 'bottom_pair'
+            || type === 'underpair' || type === 'paired_board') {
+            if (toCall < pot * 0.35 && eq > need + 0.10)
+                return { action: ACT_CALL, amount: 0 };
+            return { action: ACT_FOLD, amount: 0 };
+        }
+        if (type === 'combo_draw' || type === 'flush_draw'
+            || type === 'straight_draw' || type === 'gutshot') {
+            const drawEq = type === 'combo_draw' ? 0.30
+                         : type === 'flush_draw' ? 0.20
+                         : type === 'straight_draw' ? 0.18 : 0.09;
+            const implied = 0.08;
+            if (drawEq + implied > need) return { action: ACT_CALL, amount: 0 };
+            return { action: ACT_FOLD, amount: 0 };
+        }
+        return { action: ACT_FOLD, amount: 0 };
+    }
+
+    // ===================== 河牌策略 =====================
+    riverStrategy(t, seat) {
+        const s = this.situation(t, seat);
+        const { p, toCall, pot, need, ip, type, eq, multiway, T } = s;
+
+        if (toCall === 0) {
+            if (type === 'monster' || type === 'set' || type === 'trips'
+                || type === 'two_pair' || type === 'two_pair_weak') {
+                if (Math.random() < this.tempScale(0.90, T))
+                    return this.makeRaise(t, p, 0.75);
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            if (type === 'overpair' || type === 'tptk' || type === 'top_pair') {
+                if (multiway) {
+                    if (Math.random() < this.tempScale(0.35, T))
+                        return this.makeRaise(t, p, 0.55);
+                    return { action: ACT_CHECK, amount: 0 };
+                }
+                if (Math.random() < this.tempScale(ip ? 0.60 : 0.40, T))
+                    return this.makeRaise(t, p, 0.55);
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            if (type === 'middle_pair' || type === 'bottom_pair' || type === 'underpair') {
+                return { action: ACT_CHECK, amount: 0 };
+            }
+            let bluffRate = ip ? 0.28 : 0.15;
+            if (multiway) bluffRate *= 0.3;
+            if (Math.random() < this.tempScale(bluffRate * this.aggressionBias, T))
+                return this.makeRaise(t, p, 0.70);
+            return { action: ACT_CHECK, amount: 0 };
+        }
+
+        if (type === 'monster' || type === 'set' || type === 'trips'
+            || type === 'two_pair') {
+            if (Math.random() < this.tempScale(0.55, T) && p.stack > toCall * 2) {
+                const target = Math.max(t.currentBet * 3, t.currentBet + t.minRaise);
+                return { action: ACT_RAISE, amount: Math.min(target, p.betRound + p.stack) };
+            }
+            return { action: ACT_CALL, amount: 0 };
+        }
+        if (type === 'overpair' || type === 'tptk' || type === 'top_pair') {
+            if (toCall > pot * 0.85) return { action: ACT_FOLD, amount: 0 };
+            if (eq > need + 0.05) return { action: ACT_CALL, amount: 0 };
+            return { action: ACT_FOLD, amount: 0 };
+        }
+        if (type === 'middle_pair' || type === 'bottom_pair'
+            || type === 'underpair' || type === 'paired_board') {
+            if (toCall < pot * 0.30 && eq > need + 0.10)
+                return { action: ACT_CALL, amount: 0 };
+            return { action: ACT_FOLD, amount: 0 };
+        }
+        return { action: ACT_FOLD, amount: 0 };
+    }
+
+    // ===================== 蒙特卡洛 =====================
     equityWithRange(t, seat) {
         const me = t.players[seat];
         const h0 = me.hole[0].v, h1 = me.hole[1].v;
@@ -871,7 +1128,7 @@ class Bot {
             for (const opp of opps) {
                 let o0 = work[idx], o1 = work[idx + 1];
                 for (let attempt = 0; attempt < 6; attempt++) {
-                    const rk = handStrength01(new Card(o0), new Card(o1));
+                    const rk = handStrengthRaw(o0, o1);
                     if (rk >= opp.minRank || attempt === 5) break;
                     idx += 2;
                     if (idx + 2 > workLen) idx = 0;
@@ -903,6 +1160,7 @@ class Bot {
         return 0.28;
     }
 
+    // ===================== 对手建模 =====================
     observe(t, mySeat) {
         if (t.button !== this.lastButton) {
             for (const [seat, rec] of this.currentHand) {
@@ -940,18 +1198,7 @@ class Bot {
         return s;
     }
 
-    opponentSummary(t, mySeat) {
-        let vpip = 0, count = 0;
-        for (let i = 0; i < t.numSeats; i++) {
-            if (i === mySeat) continue;
-            const p = t.players[i];
-            if (!p.inHand || p.folded) continue;
-            const s = this.getStats(i);
-            if (s.hands >= 3) { vpip += s.vpip / s.hands; count++; }
-        }
-        return { avgVpip: count > 0 ? vpip / count : 0.35, hands: count };
-    }
-
+    // ===================== 温度 =====================
     tempScale(p, T) {
         if (T === 1 || p <= 0.001 || p >= 0.999) return p;
         const logit = Math.log(p / (1 - p));
@@ -972,11 +1219,17 @@ class Bot {
         return Math.max(0.3, Math.min(1.8, base * this.tempBias * noise));
     }
 
+    // ===================== 工具 =====================
     relToButton(t, seat) {
         const n = t.numSeats;
         return ((seat - t.button) % n + n) % n;
     }
-
+    liveOpponents(t, seat) {
+        let n = 0;
+        for (let i = 0; i < t.numSeats; i++)
+            if (i !== seat && t.players[i].inHand && !t.players[i].folded) n++;
+        return n;
+    }
     makeRaise(t, p, frac) {
         const toCall = t.currentBet - p.betRound;
         let target = t.currentBet <= 0
@@ -1013,7 +1266,6 @@ function startAsHost() {
     isHost = true;
     mySeat = 0;
     roomCode = genRoomCode();
-
     document.getElementById('lobbyForm').style.display = 'none';
     document.getElementById('hostInfo').style.display = 'block';
     document.getElementById('roomCode').textContent = roomCode;
@@ -1156,6 +1408,7 @@ function applyState(v) {
     table.winners = v.winners;
     table.wonAmount = v.wonAmount;
     table.wentToShowdown = v.wentToShowdown || false;
+    table.preflopAggressor = v.preflopAggressor ?? -1;
     for (let i = 0; i < v.numSeats; i++) {
         const p = table.players[i];
         const d = v.players[i];
@@ -1176,6 +1429,7 @@ function serializeTableView(t, viewerSeat) {
         pot: t.pot, activeCount: t.activeCount,
         winners: t.winners.slice(), wonAmount: t.wonAmount.slice(),
         wentToShowdown: t.wentToShowdown,
+        preflopAggressor: t.preflopAggressor,
         players: t.players.map(p => ({
             stack: p.stack, betRound: p.betRound, betTotal: p.betTotal,
             hole: (p.seat === viewerSeat || showdown) ? [p.hole[0].v, p.hole[1].v] : [0xFF, 0xFF],
@@ -1267,9 +1521,10 @@ function startNextHand() {
 
     handNum++;
     table.startHand(Date.now() ^ (handNum * 7919));
+    _lastBoardCount = 0;
     waitingNextHand = false;
     lastAction = "";
-    log("=== 第 " + handNum + " 手开始 ===");
+    log("════ 第 " + handNum + " 手 ════");
     if (isHost && conns.length > 0) broadcastState();
     render();
     updateControls();
@@ -1294,15 +1549,34 @@ function scheduleStep() {
         table.act(d.action, d.amount);
         const after = snapshot(table.players[seat]);
         describeAction(seat, before, after);
+        logBoardChange();
         if (isHost && conns.length > 0) broadcastState();
         else render();
         if (table.street === ST_OVER) onHandEnd();
         else scheduleStep();
-    }, 500);
+    }, 450);
 }
 
 function onHandEnd() {
     waitingNextHand = true;
+
+    if (table.wentToShowdown && table.winners.length > 0) {
+        const HAND_NAMES = ["高牌","一对","两对","三条","顺子","同花","葫芦","四条","同花顺"];
+        let lines = [];
+        for (const w of table.winners) {
+            const p = table.players[w];
+            const code = eval7(p.hole[0].v, p.hole[1].v,
+                table.board[0].v, table.board[1].v, table.board[2].v,
+                table.board[3].v, table.board[4].v);
+            const cat = code >> 20;
+            lines.push(playerName(w) + "（" + HAND_NAMES[cat] + "）赢得 $" + table.wonAmount[w]);
+        }
+        log("═══ " + lines.join(" / "));
+    } else if (table.winners.length > 0) {
+        const w = table.winners[0];
+        log("═══ " + playerName(w) + " 赢得 $" + table.wonAmount[w] + "（其他人弃牌）");
+    }
+
     render();
     updateControls();
     if (isHost && conns.length > 0) broadcastState();
@@ -1312,27 +1586,54 @@ function snapshot(p) {
     return { folded: p.folded, allIn: p.allIn, betRound: p.betRound, stack: p.stack };
 }
 
+const STREET_TAG = ["", "[翻前]", "[翻牌]", "[转牌]", "[河牌]", "", ""];
+
+function playerName(seat) {
+    if (seat === mySeat) return "你";
+    if (seat === 0 && isHost) return "房主";
+    return "AI " + seat;
+}
+
 function describeAction(seat, before, after) {
-    const who = seat === mySeat ? "你" : "座位" + seat;
+    const who = playerName(seat);
+    const tag = STREET_TAG[table.street] || "";
     let msg;
     if (!before.folded && after.folded) msg = who + " 弃牌";
-    else if (!before.allIn && after.allIn) msg = who + " 全下 $" + after.betRound;
+    else if (!before.allIn && after.allIn) msg = who + " 全下至 $" + after.betRound;
     else if (after.betRound > before.betRound) {
         if (before.betRound === 0) msg = who + " 下注 $" + after.betRound;
-        else msg = who + " 加注到 $" + after.betRound;
+        else msg = who + " 加注至 $" + after.betRound;
+    } else if (after.stack === before.stack) msg = who + " 过牌";
+    else {
+        const paid = before.stack - after.stack;
+        if (after.betRound === table.currentBet) msg = who + " 跟注 $" + paid;
+        else msg = who + " 补齐至 $" + after.betRound;
     }
-    else if (after.stack === before.stack) msg = who + " 过牌";
-    else msg = who + " 跟注 $" + (before.stack - after.stack);
     lastAction = msg;
-    log(msg);
+    log(tag + " " + msg);
+}
+
+let _lastBoardCount = 0;
+
+function logBoardChange() {
+    if (table.boardCount > _lastBoardCount) {
+        let s = "";
+        for (let i = _lastBoardCount; i < table.boardCount; i++) {
+            s += table.board[i].label() + table.board[i].symbol() + " ";
+        }
+        const tag = STREET_TAG[table.street] || "";
+        log(tag + " 公共牌: " + s.trim());
+        _lastBoardCount = table.boardCount;
+    }
 }
 
 function log(msg) {
     const el = document.getElementById("log");
-    const lines = el.textContent.split("\n").filter(x => x && x !== "—");
+    const lines = el.textContent.split("\n").filter(x => x !== "—");
     lines.push(msg);
-    while (lines.length > 8) lines.shift();
+    while (lines.length > 16) lines.shift();
     el.textContent = lines.join("\n");
+    el.scrollTop = el.scrollHeight;
 }
 
 function humanAction(seat, action, amount) {
@@ -1341,6 +1642,7 @@ function humanAction(seat, action, amount) {
     table.act(action, amount);
     const after = snapshot(table.players[seat]);
     describeAction(seat, before, after);
+    logBoardChange();
     if (isHost && conns.length > 0) broadcastState();
     else { render(); updateControls(); }
     if (table.street === ST_OVER) onHandEnd();
@@ -1385,11 +1687,11 @@ function render() {
         let text = "★ ";
         if (table.winners.length === 1) {
             const w = table.winners[0];
-            text += (w === mySeat ? "你" : "座位" + w) + " 赢得 $" + table.wonAmount[w];
+            text += playerName(w) + " 赢得 $" + table.wonAmount[w];
         } else {
             text += "平局：";
             for (const w of table.winners)
-                text += (w === mySeat ? "你" : "座" + w) + " $" + table.wonAmount[w] + "  ";
+                text += playerName(w) + " $" + table.wonAmount[w] + "  ";
         }
         ctx.fillStyle = COLOR.goldBright;
         ctx.fillText(text, CX, CY - RY + 60);
@@ -1515,7 +1817,7 @@ function drawStatusBar() {
     else if (table.street === ST_OVER) { status = "本手结束"; col = COLOR.gold; }
     else if (table.toAct === mySeat) { status = "轮到你"; col = COLOR.green; }
     else if (table.toAct >= 0) {
-        status = "等待 " + (table.toAct === 0 ? "房主" : "座位 " + table.toAct);
+        status = "等待 " + playerName(table.toAct);
         col = COLOR.dim;
     }
     ctx.textAlign = "right"; ctx.fillStyle = col;
@@ -1551,8 +1853,7 @@ function renderGameOver() {
         ctx.fillStyle = isMe ? COLOR.goldBright : COLOR.text;
         ctx.font = "bold 20px 'Microsoft YaHei', sans-serif";
         ctx.fillText("第 " + (i+1) + " 名", panelX+40, y);
-        ctx.fillText(isMe ? "你" : (r.seat === 0 ? "房主" : "座位 " + r.seat),
-                     panelX+200, y);
+        ctx.fillText(playerName(r.seat), panelX+200, y);
         ctx.textAlign = "right"; ctx.fillStyle = COLOR.gold;
         ctx.font = "bold 22px Consolas, monospace";
         ctx.fillText("$" + r.stack, panelX + panelW - 40, y);
