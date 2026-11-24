@@ -146,9 +146,8 @@
   #game.screen{
     padding:8px 14px 22px;
     display:grid;
-    grid-template-columns:minmax(0,1fr) 290px;
-    grid-template-areas:"top top" "status status" "table log" "controls controls";
-    column-gap:12px;
+    grid-template-columns:minmax(0,1fr);
+    grid-template-areas:"top" "status" "table" "controls";
   }
   #topbar{grid-area:top;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 2px 6px}
   #tableInfo{color:#8d97a8;font-size:13px;letter-spacing:.5px}
@@ -164,8 +163,9 @@
     padding:2px 0 6px;
     text-shadow:0 0 16px rgba(233,199,101,.12);
   }
+  #tableArea{grid-area:table;position:relative;min-width:0}
   #tableWrap{
-    grid-area:table;
+    margin-right:302px;
     position:relative;
     border-radius:18px;
     overflow:hidden;
@@ -174,8 +174,13 @@
     background:#0b0f15;
   }
   #table{display:block;width:100%;height:auto}
+  #mobileTable{display:none}
   #log{
-    grid-area:log;
+    position:absolute;
+    right:0;
+    top:0;
+    bottom:0;
+    width:290px;
     padding:10px 14px;
     min-height:0;
     overflow-y:auto;
@@ -197,6 +202,8 @@
   .log-line.system{color:#b3a0d6}
   .log-line.showdown{color:#cbb7ff}
   #controls{grid-area:controls;margin-top:10px}
+  .ready-row{display:flex;justify-content:center;padding:4px 0}
+  #btnNext{min-width:260px;padding:14px 28px;font-size:17px;font-weight:700}
   .action-row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
   .action-row button{min-width:112px;padding:12px 18px;font-size:16px;font-weight:600}
   #btnAllIn{background:linear-gradient(180deg,#5e2a2a,#471f1f);border-color:#7b3838;color:#ffc9c9}
@@ -231,6 +238,48 @@
   .quick-row{display:flex;gap:8px;margin-top:10px;justify-content:center;flex-wrap:wrap}
   .quick-row button{padding:6px 14px;font-size:13px;border-radius:999px;color:#b9c4d6}
 
+  /* ---------------- 手机牌桌 ---------------- */
+  .m-board{display:flex;justify-content:center;gap:6px;margin:6px 0 8px}
+  .m-card{
+    width:46px;height:64px;border-radius:6px;
+    background:#f8f6ef;border:1px solid #c9c3b4;color:#1b2430;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    font-family:Consolas,"Microsoft YaHei",sans-serif;font-weight:800;line-height:1.05;
+    box-shadow:0 4px 10px rgba(0,0,0,.35);
+  }
+  .m-card.red{color:#c0392b}
+  .m-card.empty{background:rgba(0,0,0,.18);border:1px dashed rgba(255,255,255,.14);box-shadow:none}
+  .m-card .r{font-size:17px}
+  .m-card .s{font-size:20px}
+  .m-pot{text-align:center;color:#ffe08a;font-size:16px;font-weight:700;margin:2px 0 8px;min-height:20px}
+  .m-seats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .m-seat{
+    background:linear-gradient(180deg,rgba(24,31,43,.97),rgba(15,20,28,.97));
+    border:1px solid #2d3747;border-radius:11px;padding:8px;position:relative;min-height:86px;
+  }
+  .m-seat.you{border-color:#4f7fb8}
+  .m-seat.turn{border-color:#e8c05a;box-shadow:0 0 14px rgba(232,192,90,.28)}
+  .m-seat.winner{border-color:#ffd46b;background:linear-gradient(180deg,rgba(62,49,19,.98),rgba(35,29,13,.98))}
+  .m-seat.folded{opacity:.48}
+  .m-head{display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#eef1f6}
+  .m-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:96px}
+  .m-tag{font-size:9px;font-weight:700;border-radius:4px;padding:1px 4px;background:#2a3445;color:#aeb9ca}
+  .m-tag.d{background:#f3f1e8;color:#2a2a26}
+  .m-tag.you{background:#2d5aa8;color:#fff}
+  .m-tag.allin{background:#6b2525;color:#ffb3b3}
+  .m-sub{display:flex;justify-content:space-between;gap:4px;margin-top:3px;font-size:11px;color:#8d97a8}
+  .m-stack{color:#e8c05a;font-weight:700}
+  .m-hole{display:flex;gap:3px;margin-top:5px}
+  .m-mini{
+    width:30px;height:40px;border-radius:4px;background:#f8f6ef;border:1px solid #c9c3b4;
+    color:#1b2430;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    font-family:Consolas,sans-serif;font-weight:800;line-height:1;font-size:12px;
+  }
+  .m-mini.red{color:#c0392b}
+  .m-mini.back{background:linear-gradient(145deg,#1e3358,#101c33);border-color:#4b6c9f;color:rgba(160,195,240,.45)}
+  .m-bet{margin-top:4px;font-size:10px;color:#f0c46a;min-height:13px}
+  .m-win{position:absolute;right:7px;bottom:6px;font-size:10px;color:#ffe08a;font-weight:700}
+
   /* ---------------- Overlay ---------------- */
   #overlay{
     position:fixed;inset:0;z-index:50;
@@ -264,12 +313,13 @@
 
   @media(min-width:821px) and (max-width:1100px){
     #game.screen{display:block;overflow-x:hidden}
-    #log{max-height:120px;min-height:74px;margin-top:10px}
+    #tableWrap{margin-right:0}
+    #log{position:static;width:auto;height:120px;min-height:0;max-height:none;margin-top:10px}
   }
 
   @media(max-width:820px){
     .screen{padding:8px}
-    #game.screen{display:block;overflow-x:hidden}
+    #game.screen{display:block;overflow-x:hidden;padding-bottom:250px}
     #lobby.screen{padding:20px 10px 30px}
     .brand h1{font-size:32px;letter-spacing:8px;text-indent:8px}
     .brand .suits{font-size:16px;letter-spacing:8px}
@@ -285,13 +335,22 @@
     #status{font-size:14px;min-height:22px}
     #tableInfo{font-size:11px}
     #btnLeave{padding:6px 10px;font-size:12px}
-    #tableWrap{overflow-x:auto;scrollbar-width:none}
-    #tableWrap::-webkit-scrollbar{display:none}
-    #table{min-width:840px}
-    #log{font-size:11px;max-height:96px;min-height:58px;padding:7px 10px;margin-top:10px}
+    #tableWrap{display:none}
+    #mobileTable{display:block}
+    #log{position:static;width:auto;height:90px;min-height:90px;max-height:90px;font-size:11px;padding:7px 10px;margin-top:8px}
+    #controls{
+      position:fixed;left:0;right:0;bottom:0;z-index:30;
+      margin:0;padding:8px 10px calc(10px + env(safe-area-inset-bottom));
+      max-height:82vh;overflow-y:auto;
+      background:linear-gradient(180deg,rgba(10,13,18,.94),#0a0d12 70%);
+      border-top:1px solid #222b39;
+      box-shadow:0 -12px 30px rgba(0,0,0,.45);
+      backdrop-filter:blur(6px);
+    }
     .action-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     .action-row button{width:100%;min-width:0;padding:11px 6px;font-size:14px}
-    #raisePanel{padding:10px 12px}
+    #btnNext{width:100%;min-width:0;padding:13px 10px;font-size:16px}
+    #raisePanel{padding:10px 12px;margin-top:8px}
     #raiseLabel{font-size:12px}
     #raiseAmount{width:86px;font-size:13px}
     .quick-row button{padding:5px 10px;font-size:12px}
@@ -382,12 +441,22 @@
     <button id="btnLeave" class="ghost">离开</button>
   </div>
   <div id="status">准备开始</div>
-  <div id="tableWrap">
-    <canvas id="table" width="1200" height="760"></canvas>
+  <div id="tableArea">
+    <div id="tableWrap">
+      <canvas id="table" width="1200" height="760"></canvas>
+    </div>
+    <div id="mobileTable">
+      <div id="mBoard" class="m-board"></div>
+      <div id="mPot" class="m-pot"></div>
+      <div id="mSeats" class="m-seats"></div>
+    </div>
+    <div id="log"></div>
   </div>
-  <div id="log"></div>
   <div id="controls">
-    <div class="action-row">
+    <div id="readyRow" class="ready-row hidden">
+      <button id="btnNext" class="gold">下一手</button>
+    </div>
+    <div id="actionRow" class="action-row">
       <button id="btnFold" class="danger" disabled>弃牌</button>
       <button id="btnCheckCall" class="primary" disabled>过牌</button>
       <button id="btnRaise" class="gold" disabled>加注</button>
@@ -1474,6 +1543,9 @@ if (typeof window !== 'undefined') {
         joined: false,
         spectator: false,
         lastCenterHand: null,
+        awaitingNext: false,
+        readySeats: new Set(),
+        readyPending: false,
     };
 
     // -----------------------------------------------------------------------
@@ -1515,9 +1587,6 @@ if (typeof window !== 'undefined') {
         $('lobby').classList.add('hidden');
         $('game').classList.remove('hidden');
         $('overlay').classList.add('hidden');
-        if (window.innerWidth <= 820) {
-            showToast('牌桌可左右滑动，查看其他座位', 3000);
-        }
     }
 
     function showLobby() {
@@ -1539,6 +1608,9 @@ if (typeof window !== 'undefined') {
         app.spectator = false;
         app.raiseTo = 0;
         app.turnKey = '';
+        app.awaitingNext = false;
+        app.readySeats.clear();
+        app.readyPending = false;
         $('game').classList.add('hidden');
         $('hostInfo').classList.add('hidden');
         $('joinInfo').classList.add('hidden');
@@ -1633,6 +1705,9 @@ if (typeof window !== 'undefined') {
         }
         app.notice = '';
         app.turnKey = '';
+        app.awaitingNext = false;
+        app.readySeats.clear();
+        app.readyPending = false;
         const ok = t.startHand(seed());
         if (!ok || t.street === ST_OVER) {
             endGame('牌局结束', '无法开始下一手。');
@@ -1794,18 +1869,74 @@ if (typeof window !== 'undefined') {
                 return;
             }
         }
-        scheduleNextHand();
+        prepareNextHand();
     }
 
-    function scheduleNextHand() {
-        app.notice = '下一手即将开始…';
+    function activeHumanSeats() {
+        const t = app.table;
+        if (!t) return [];
+        return t.players
+            .filter(p => p.occupied && p.isHuman && p.stack > 0)
+            .map(p => p.seat);
+    }
+
+    function prepareNextHand() {
+        clearTimers();
+        app.awaitingNext = true;
+        app.readySeats.clear();
+        app.readyPending = false;
+        app.notice = '';
+        addLog('本手结束，等待真人确认下一手…', 'system');
+
+        const humans = activeHumanSeats();
+        if (humans.length === 0) {
+            // 没有真人还有筹码：电脑之间直接继续
+            app.notice = '即将开始下一手…';
+            renderAll();
+            const token = ++app.stageToken;
+            app.nextTimer = setTimeout(() => {
+                app.nextTimer = null;
+                if (app.stageToken !== token || !app.awaitingNext || app.stage !== 'playing') return;
+                startNextHand();
+            }, 1600);
+            return;
+        }
         renderAll();
-        const token = ++app.stageToken;
-        app.nextTimer = setTimeout(() => {
-            app.nextTimer = null;
-            if (app.stageToken !== token || app.stage !== 'playing') return;
-            beginHand();
-        }, 4600);
+    }
+
+    function startNextHand() {
+        if (!app.awaitingNext || app.stage !== 'playing') return;
+        app.awaitingNext = false;
+        app.readySeats.clear();
+        app.readyPending = false;
+        app.notice = '';
+        beginHand();
+    }
+
+    function markReady(seat) {
+        if (!app.awaitingNext || app.mode === 'client') return;
+        const t = app.table;
+        if (!t) return;
+        const p = t.players[seat];
+        if (!p || !p.occupied || !p.isHuman || p.stack <= 0) return;
+        if (app.readySeats.has(seat)) return;
+        app.readySeats.add(seat);
+        app.readyPending = false;
+        addLog(`${p.name} 已准备`, 'system');
+        renderAll();
+        checkReadyComplete();
+    }
+
+    function checkReadyComplete() {
+        if (!app.awaitingNext) return;
+        const humans = activeHumanSeats();
+        if (humans.length === 0) {
+            startNextHand();
+            return;
+        }
+        if (humans.every(s => app.readySeats.has(s))) {
+            startNextHand();
+        }
     }
 
     function endGame(title, text, soloRestart, remote) {
@@ -1813,6 +1944,9 @@ if (typeof window !== 'undefined') {
         clearTimers();
         app.stage = 'over';
         app.notice = '';
+        app.awaitingNext = false;
+        app.readySeats.clear();
+        app.readyPending = false;
         if (app.mode === 'host' && !remote) {
             for (const m of app.conns.values()) {
                 if (m.conn && m.conn.open) {
@@ -1899,6 +2033,15 @@ if (typeof window !== 'undefined') {
             .filter(e => e.to == null || e.to === yourSeat)
             .slice(-80);
 
+        const activeHumans = t.players
+            .filter(p => p.occupied && p.isHuman && p.stack > 0)
+            .map(p => p.seat);
+        const canReady = !!(
+            app.awaitingNext &&
+            me && me.occupied && me.isHuman && me.stack > 0 &&
+            !app.readySeats.has(yourSeat)
+        );
+
         return {
             numSeats: t.numSeats,
             smallBlind: t.smallBlind,
@@ -1919,6 +2062,11 @@ if (typeof window !== 'undefined') {
             wentToShowdown: t.wentToShowdown,
             result,
             notice: app.notice,
+            awaitingNext: app.awaitingNext,
+            readySeats: [...app.readySeats],
+            canReady,
+            readyCount: app.readySeats.size,
+            humanCount: activeHumans.length,
             log,
         };
     }
@@ -1944,17 +2092,10 @@ if (typeof window !== 'undefined') {
     function renderView(view) {
         app.view = view;
         try {
-            drawTable(view);
+            if (window.innerWidth > 820) drawTable(view);
+            else renderMobile(view);
         } catch (e) {
             console.error('draw error', e);
-        }
-        // 手机端牌桌比屏幕宽，横向滚动；每一手开始时自动居中
-        if (window.innerWidth <= 820 && app.lastCenterHand !== view.handNo) {
-            app.lastCenterHand = view.handNo;
-            requestAnimationFrame(() => {
-                const wrap = $('tableWrap');
-                if (wrap) wrap.scrollLeft = Math.max(0, (wrap.scrollWidth - wrap.clientWidth) / 2);
-            });
         }
         renderTopbar(view);
         renderStatus(view);
@@ -1970,11 +2111,22 @@ if (typeof window !== 'undefined') {
     function renderStatus(view) {
         let s = '';
         const me = view.seats[view.yourSeat];
-        if (view.notice) s = view.notice;
-        else if (view.street === ST_OVER) s = view.result || '本手结束';
-        else if (view.toAct === view.yourSeat) s = '轮到你行动';
-        else if (view.toAct >= 0 && view.seats[view.toAct]) s = `${view.seats[view.toAct].name} 行动中…`;
-        if (!view.notice && view.street !== ST_OVER && me && me.stack <= 0) {
+        if (view.awaitingNext) {
+            const ready = Array.isArray(view.readySeats) && view.readySeats.includes(view.yourSeat);
+            if (ready) s = '已准备，等待其他真人确认下一手…';
+            else if (view.canReady) s = '本手结束，请确认下一手';
+            else if (!me || me.stack <= 0) s = '你已出局，等待其他玩家确认下一手…';
+            else s = '等待真人确认下一手…';
+        } else if (view.notice) {
+            s = view.notice;
+        } else if (view.street === ST_OVER) {
+            s = view.result || '本手结束';
+        } else if (view.toAct === view.yourSeat) {
+            s = '轮到你行动';
+        } else if (view.toAct >= 0 && view.seats[view.toAct]) {
+            s = `${view.seats[view.toAct].name} 行动中…`;
+        }
+        if (!view.awaitingNext && !view.notice && view.street !== ST_OVER && me && me.stack <= 0) {
             s = '你已出局，观战中';
         }
         $('status').textContent = s;
@@ -1995,6 +2147,28 @@ if (typeof window !== 'undefined') {
     function renderControls(view) {
         const legal = view.legal;
         const turn = !!(legal && legal.turn);
+
+        if (view.awaitingNext) {
+            $('actionRow').classList.add('hidden');
+            $('readyRow').classList.remove('hidden');
+            $('raisePanel').classList.add('hidden');
+            $('btnFold').disabled = true;
+            $('btnCheckCall').disabled = true;
+            $('btnRaise').disabled = true;
+            $('btnAllIn').disabled = true;
+
+            const ready = Array.isArray(view.readySeats) && view.readySeats.includes(view.yourSeat);
+            const can = !!view.canReady && !app.readyPending;
+            $('btnNext').disabled = !can;
+            if (ready) $('btnNext').textContent = '已准备，等待其他玩家…';
+            else if (app.readyPending) $('btnNext').textContent = '准备中…';
+            else if (view.canReady) $('btnNext').textContent = '下一手';
+            else $('btnNext').textContent = '等待其他玩家…';
+            return;
+        }
+
+        $('readyRow').classList.add('hidden');
+        $('actionRow').classList.remove('hidden');
 
         $('btnFold').disabled = !turn;
         $('btnCheckCall').disabled = !turn;
@@ -2067,6 +2241,21 @@ if (typeof window !== 'undefined') {
             return;
         }
         applyAction(app.mySeat, action, amount);
+    }
+
+    function doReady() {
+        const view = app.view;
+        if (!view || !view.awaitingNext || !view.canReady) return;
+        if (app.mode === 'client') {
+            if (app.clientConn && app.clientConn.open) {
+                try { app.clientConn.send({ t: 'ready' }); } catch (e) { }
+                app.readyPending = true;
+                renderControls(view);
+            }
+            return;
+        }
+        app.readyPending = true;
+        markReady(app.mySeat);
     }
 
     // -----------------------------------------------------------------------
@@ -2408,6 +2597,75 @@ if (typeof window !== 'undefined') {
     }
 
     // -----------------------------------------------------------------------
+    //  手机牌桌（DOM）
+    // -----------------------------------------------------------------------
+    function mobileCard(v) {
+        if (v == null || v < 0 || v >= 52) return '<div class="m-card empty"></div>';
+        const red = (v & 3) === 1 || (v & 3) === 2;
+        return `<div class="m-card${red ? ' red' : ''}"><span class="r">${RANKS[v >> 2]}</span><span class="s">${SUITS[v & 3]}</span></div>`;
+    }
+
+    function mobileMini(v) {
+        if (v == null || v < 0 || v >= 52) return '<div class="m-mini back">♠</div>';
+        const red = (v & 3) === 1 || (v & 3) === 2;
+        return `<div class="m-mini${red ? ' red' : ''}"><span>${RANKS[v >> 2]}</span><span>${SUITS[v & 3]}</span></div>`;
+    }
+
+    function renderMobile(view) {
+        const board = $('mBoard');
+        const pot = $('mPot');
+        const seats = $('mSeats');
+        if (!board || !pot || !seats) return;
+
+        let bh = '';
+        for (let i = 0; i < 5; i++) {
+            bh += (i < view.boardCount) ? mobileCard(view.board[i]) : '<div class="m-card empty"></div>';
+        }
+        board.innerHTML = bh;
+        pot.textContent = view.pot > 0 ? '底池 ' + fmt(view.pot) : '';
+
+        const n = view.numSeats;
+        const start = view.yourSeat >= 0 ? view.yourSeat : 0;
+        const order = [];
+        for (let k = 0; k < n; k++) order.push((start + k) % n);
+
+        let html = '';
+        for (const i of order) {
+            const p = view.seats[i];
+            if (!p || !p.occupied) continue;
+            const cls = [
+                'm-seat',
+                i === view.yourSeat ? 'you' : '',
+                p.isTurn ? 'turn' : '',
+                p.isWinner ? 'winner' : '',
+                p.folded ? 'folded' : '',
+            ].filter(Boolean).join(' ');
+            const tags = [];
+            if (p.isDealer) tags.push('<span class="m-tag d">D</span>');
+            if (i === view.yourSeat) tags.push('<span class="m-tag you">你</span>');
+            if (p.allIn) tags.push('<span class="m-tag allin">ALL IN</span>');
+
+            let hole = '';
+            if (p.inHand && !p.folded) {
+                if (p.hole && p.hole[0] >= 0) {
+                    hole = `<div class="m-hole">${mobileMini(p.hole[0])}${mobileMini(p.hole[1])}</div>`;
+                } else {
+                    hole = `<div class="m-hole">${mobileMini(-1)}${mobileMini(-1)}</div>`;
+                }
+            }
+
+            html += `<div class="${cls}">
+                <div class="m-head"><span class="m-name">${esc(p.name)}</span>${tags.join('')}</div>
+                <div class="m-sub"><span class="m-stack">${p.stack <= 0 ? '出局' : '● ' + fmt(p.stack)}</span><span>${esc(p.pos || '')}</span></div>
+                ${hole}
+                <div class="m-bet">${p.betRound > 0 ? '下注 ' + fmt(p.betRound) : ''}</div>
+                ${p.isWinner && p.won > 0 ? `<div class="m-win">+${fmt(p.won)}</div>` : ''}
+            </div>`;
+        }
+        seats.innerHTML = html;
+    }
+
+    // -----------------------------------------------------------------------
     //  联机：房主
     // -----------------------------------------------------------------------
     let peerPromise = null;
@@ -2549,6 +2807,9 @@ if (typeof window !== 'undefined') {
                     conn.send({ t: 'state', view: buildView(app.table, conn.meta.seat) });
                 } catch (e) { }
             }
+        } else if (data.t === 'ready') {
+            if (app.stage !== 'playing' || !conn.meta || !app.awaitingNext) return;
+            markReady(conn.meta.seat);
         } else if (data.t === 'leave') {
             try { conn.close(); } catch (e) { }
         }
@@ -2624,6 +2885,12 @@ if (typeof window !== 'undefined') {
                 p.name = meta.name + '·托管';
                 app.bots[meta.seat] = new Bot((seed() ^ (meta.seat * 7919)) >>> 0);
                 addLog(`${meta.name} 掉线，由电脑接管`, 'system');
+                if (app.awaitingNext) {
+                    app.readySeats.delete(meta.seat);
+                    renderAll();
+                    checkReadyComplete();
+                    return;
+                }
                 renderAll();
                 if (app.table.toAct === meta.seat && app.table.street !== ST_OVER) {
                     scheduleTurn();
@@ -2743,6 +3010,9 @@ if (typeof window !== 'undefined') {
             }
             app.mySeat = v.yourSeat;
             app.view = v;
+            if (!v.awaitingNext || (Array.isArray(v.readySeats) && v.readySeats.includes(v.yourSeat))) {
+                app.readyPending = false;
+            }
             renderView(v);
         } else if (data.t === 'over') {
             endGame(data.title || '牌局结束', data.text || '', false, true);
@@ -2786,6 +3056,10 @@ if (typeof window !== 'undefined') {
     function init() {
         setupCanvas();
 
+        window.addEventListener('resize', () => {
+            if (app.view) renderView(app.view);
+        });
+
         $('btnSolo').addEventListener('click', startSolo);
 
         $('btnHost').addEventListener('click', createRoom);
@@ -2818,6 +3092,7 @@ if (typeof window !== 'undefined') {
             doAction(v.currentBet > 0 ? ACT.RAISE : ACT.BET, app.raiseTo);
         });
         $('btnAllIn').addEventListener('click', () => doAction(ACT.ALLIN, 0));
+        $('btnNext').addEventListener('click', doReady);
 
         $('raiseSlider').addEventListener('input', e => setRaiseTo(e.target.value));
         $('raiseAmount').addEventListener('change', e => setRaiseTo(e.target.value));
